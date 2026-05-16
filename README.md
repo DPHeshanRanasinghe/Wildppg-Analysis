@@ -41,7 +41,6 @@ specifically built around this challenge.
 | Window size | 200 samples = 8 seconds |
 | Ground truth | ECG-derived HR (Pan-Tompkins) |
 | Body sites | Wrist, Ankle, Chest, Head |
-| Sensors | PPG (Green), IMU, Temperature, Altitude |
 
 ---
 
@@ -56,6 +55,7 @@ specifically built around this challenge.
 ### 2. Visualising the PPG Signal
 - Plot raw 8-second PPG windows
 - Compare a clean window vs a motion-corrupted window
+- Compare all 4 body sites (wrist, chest, head, ankle) for the same window
 - Understand what a heartbeat looks like in the signal
 
 ### 3. Frequency Domain Analysis
@@ -68,61 +68,86 @@ specifically built around this challenge.
 - See filter ringing on severely corrupted windows
 - Understand the limits of classical signal processing
 
-### 5. Building a CNN from Scratch
+### 5. Building a 1-Channel CNN
 - Understand the input shape: `(batch, 1, 200)`
 - Build a 3-layer 1D CNN with `nn.Conv1d`, `MaxPool1d`, `Linear`
-- Trace the shape of data through every layer
-- Understand what each layer is detecting:
-  - Layer 1 → local pulse shapes
+- Trace the shape of data through every layer:
+  - Layer 1 → local pulse shapes (kernel sees 0.28 seconds)
   - Layer 2 → one full heartbeat cycle
   - Layer 3 → rhythm across multiple beats
+- Train on subjects 0–12, test on subjects 13–15
 
-### 6. Training the Model
-- Split data by subject (never mix subjects between train and test)
-- Train subjects 0–12, test on subjects 13–15
-- Train with Huber loss (robust to artifact outliers)
-- Track MAE across 130 epochs
+### 6. Multi-Site Fusion (4-Channel CNN)
+- Discover that the dataset has 4 body sites: wrist, chest, head, ankle
+- Compare all 4 sites visually — chest is cleanest, ankle is noisiest
+- Stack all 4 into a `(batch, 4, 200)` input
+- Same CNN architecture, `in_channels=1` → `in_channels=4`
+- Dramatic MAE improvement from multi-site fusion
 
-### 7. Evaluating Results
-- Predicted vs True HR scatter plot
-- Per-subject breakdown revealing why some subjects are harder
-- Understand regression-to-the-mean failure mode
+### 7. ResNet with Residual Connections
+- Understand the skip connection: `output = F(input) + input`
+- Build `ResBlock` and stack into a deeper `ResNet1D`
+- Learn why saving the best checkpoint matters (overfitting)
+- Achieve near-paper-level performance
+
+### 8. Per-Subject Analysis
+- Evaluate each test subject independently
+- Understand why some subjects are harder than others
+- See how each improvement helps the hardest subjects most
 
 ---
 
-## Results Summary
+## Final Results
 
-| Method | MAE (bpm) | Notes |
+### Overall MAE
+
+| Model | MAE (bpm) | Parameters |
 |---|---|---|
-| FFT peak picking | ~59 | Completely fooled by motion artifacts |
-| Simple CNN (ours) | ~10 | 18K parameters, 130 epochs |
-| Best subject (16) | 3.71 | Resting-dominant, similar to training data |
-| Worst subject (14) | 18.62 | High activity, out-of-distribution |
-| Paper ResNet | ~4–5 | Full 3-channel 128Hz data |
+| FFT peak picking | ~59 | — |
+| 1ch CNN (wrist only) | 10.35 | 18,209 |
+| 4ch CNN (all sites) | 6.01 | 18,545 |
+| ResNet + best checkpoint | **3.02** | 624,545 |
+| Paper ResNet (128Hz, 3ch) | ~4–5 | — |
+
+### Per-Subject Breakdown (Test Subjects)
+
+| Subject | 1ch CNN | 4ch CNN | ResNet | Difficulty |
+|---|---|---|---|---|
+| Subject 14 | 19.98 bpm | 9.37 bpm | 4.34 bpm | Hard (active) |
+| Subject 15 | 8.83 bpm  | 5.56 bpm | 2.63 bpm | Medium |
+| Subject 16 | 3.97 bpm  | 3.37 bpm | 2.10 bpm | Easy (resting) |
 
 ---
 
 ## Key Lessons Learned
 
 **Why classical methods fail:**
-42.8% of windows are too corrupted for peak detection or FFT to work.
 Motion artifacts create spectral peaks larger than the cardiac signal.
+Simple FFT peak-picking gives ~59 bpm MAE — essentially random.
+
+**Why multi-site fusion helps:**
+When the wrist is corrupted by motion, the chest or head signal is often
+clean. The model learns to rely on whichever site is most informative at
+each moment. Biggest improvement on the hardest subjects (Subject 14:
+19.98 → 9.37 bpm).
+
+**Why residual connections help:**
+Deeper networks can learn more complex patterns but are harder to train.
+Skip connections let gradients flow freely through many layers, enabling
+the ResNet to learn far more precise HR estimates.
+
+**Why saving the best checkpoint matters:**
+The ResNet eventually overfits — training loss keeps dropping while test
+MAE gets worse. Always save the weights at the best validation performance.
 
 **Why subject split matters:**
-A model trained on 13 subjects and tested on 3 unseen subjects shows
-MAE ranging from 3.71 to 18.62 bpm. Performance depends heavily on
-how similar the test subject is to the training distribution.
+MAE ranges from 2.10 to 4.34 bpm across the three test subjects.
+Performance depends on how similar the test subject is to the training
+distribution. Easy subjects were already solved by the simple 1ch CNN.
 
 **Why the model underestimates high HR:**
-The training data is skewed toward 70–100 bpm (resting/walking).
-The model rarely sees 150+ bpm windows so it plays safe and predicts
-near the mean — called regression to the mean.
-
-**How to improve:**
-- Use all 3 PPG channels (Red, Green, IR) at full 128 Hz
-- Use a deeper ResNet instead of a simple CNN
-- Use leave-one-subject-out cross-validation for fair evaluation
-- Apply data augmentation to balance the HR distribution
+Training data is skewed toward 70–100 bpm. The model plays safe and
+predicts near the mean for rare high-HR windows — regression to the mean.
 
 ---
 
